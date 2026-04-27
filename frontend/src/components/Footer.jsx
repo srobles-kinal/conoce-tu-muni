@@ -15,7 +15,7 @@ export default function Footer() {
         className="w-full h-auto max-h-40 object-cover block"
       />
       <div className="text-center text-slate-600 text-xs py-3 bg-muni-crema">
-        Municipalidad de Guatemala · Conoce tu Muni © {new Date().getFullYear()}
+     DAV-ROBLES.ORDOÑEZ-IT · Conoce tu Muni © {new Date().getFullYear()}
       </div>
     </footer>
   );
