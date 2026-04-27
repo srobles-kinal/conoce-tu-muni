@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body {
+    @apply bg-muni-crema font-sans text-slate-800 antialiased;
+  }
+}
+
+@layer components {
+  .seccion-titulo {
+    @apply bg-muni-celeste text-muni-azul font-bold uppercase tracking-wide
+           px-4 py-2 rounded-md text-sm md:text-base;
+  }
+
+  .campo-label {
+    @apply block text-sm font-semibold text-muni-azul mb-1;
+  }
+
+  .campo-input {
+    @apply w-full px-3 py-2 border-2 border-muni-azul rounded-full
+           bg-white text-slate-800 focus:outline-none
+           focus:ring-2 focus:ring-muni-verde focus:border-muni-verde
+           transition disabled:bg-slate-100;
+  }
+
+  .campo-textarea {
+    @apply w-full px-4 py-3 border-2 border-muni-azul rounded-2xl
+           bg-white text-slate-800 focus:outline-none
+           focus:ring-2 focus:ring-muni-verde focus:border-muni-verde
+           transition resize-none;
+  }
+
+  .campo-error {
+    @apply text-red-600 text-xs mt-1 font-medium;
+  }
+
+  .checkbox-muni {
+    @apply h-5 w-5 border-2 border-muni-azul rounded-full
+           text-muni-azul focus:ring-muni-verde cursor-pointer;
+  }
+
+  .btn-primario {
+    @apply bg-muni-azul text-white font-bold px-8 py-3 rounded-full
+           hover:bg-muni-azulMedio transition shadow-md
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .archivo-btn {
+    @apply inline-flex items-center gap-2 bg-slate-200 hover:bg-slate-300
+           text-slate-700 text-sm font-medium px-4 py-2 rounded-md cursor-pointer
+           transition border border-slate-300;
+  }
+}
