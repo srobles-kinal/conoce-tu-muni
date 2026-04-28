@@ -756,8 +756,9 @@ export default function FormularioRecorrido() {
                     <span className="text-sm">DPI individual verificado</span>
                   </label>
                 </div>
-                <p className="text-xs text-slate-500 mt-1.5 italic">
-                  💡 Marque esta opción si desea que la verificación del DPI se realice de forma individual para cada participante, con fines de control y validación de identidad.
+                <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
+                  Marca esta casilla si declaras haber verificado previamente la autenticidad y vigencia de cada DPI del archivo.
+                  Es un respaldo en el control de acceso del día del recorrido.
                 </p>
               </div>
 
