@@ -1,6 +1,11 @@
 /**
  * Servidor Express para el formulario "Conoce tu Muni"
  * Municipalidad de Guatemala
+ *
+ * Decisión de arquitectura: NO usamos JWT.
+ * El formulario es público por naturaleza (no hay usuarios registrados).
+ * Las defensas activas son: rate-limiting, CORS whitelist, validación
+ * de allow-list en payloads y reCAPTCHA contra abuso por bots.
  */
 require('dotenv').config();
 const express = require('express');
@@ -13,6 +18,7 @@ const rateLimit = require('express-rate-limit');
 const { appendRowToSheet } = require('./googleSheets');
 const { uploadFileToDrive } = require('./googleDrive');
 const { enviarCorreoConfirmacion } = require('./emailService');
+const { verificarRecaptcha } = require('./recaptchaService');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -23,7 +29,6 @@ const PORT = process.env.PORT || 4000;
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// CORS: permite el frontend local y el desplegado
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
   .split(',')
   .map((o) => o.trim());
@@ -38,7 +43,6 @@ app.use(
   })
 );
 
-// Rate limit: 20 solicitudes por IP cada 15 minutos
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
@@ -47,7 +51,7 @@ const limiter = rateLimit({
 app.use('/api/', limiter);
 
 // ============================================================
-// CONFIGURACIÓN DE MULTER (subida temporal de archivos)
+// MULTER
 // ============================================================
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
@@ -70,7 +74,7 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB por archivo
+  limits: { fileSize: 10 * 1024 * 1024 },
 });
 
 const fileFields = upload.fields([
@@ -82,13 +86,24 @@ const fileFields = upload.fields([
 // ============================================================
 // VALIDACIONES
 // ============================================================
+// Whitelists para evitar inyección de valores arbitrarios
+const TIPOS_TRANSPORTE = [
+  'vehiculo_propio',
+  'transporte_publico',
+  'motocicleta',
+  'bicicleta',
+  'a_pie',
+  'transporte_contratado',
+];
+
 const validarPayload = (body) => {
   const errores = [];
+  const soloDigitos = (v) => (v || '').replace(/\s/g, '');
 
   if (!body.solicitanteNombre?.trim()) errores.push('Nombre del solicitante es obligatorio');
-  if (!/^\d{13}$/.test((body.solicitanteDpi || '').replace(/\s/g, '')))
+  if (!/^\d{13}$/.test(soloDigitos(body.solicitanteDpi || '')))
     errores.push('DPI del solicitante debe tener 13 dígitos');
-  if (!/^\d{8}$/.test((body.solicitanteTelefono || '').replace(/\s/g, '')))
+  if (!/^\d{8}$/.test(soloDigitos(body.solicitanteTelefono || '')))
     errores.push('Teléfono del solicitante debe tener 8 dígitos');
 
   if (!['universitario', 'turista', 'educativo'].includes(body.categoria))
@@ -113,10 +128,22 @@ const validarPayload = (body) => {
   if (!body.horaLlegada) errores.push('Hora de llegada es obligatoria');
   if (!body.tiempoEstimado?.trim()) errores.push('Tiempo estimado es obligatorio');
 
+  if (!['transporte', 'parqueo', 'ambos', 'ninguno'].includes(body.transporteParqueo))
+    errores.push('Selección de transporte/parqueo inválida');
+
+  // Tipo de transporte: obligatorio solo si necesita transporte o ambos
+  const necesitaTransporte =
+    body.transporteParqueo === 'transporte' || body.transporteParqueo === 'ambos';
+
+  if (necesitaTransporte) {
+    if (!TIPOS_TRANSPORTE.includes(body.tipoTransporte))
+      errores.push('Tipo de transporte inválido');
+  }
+
   if (!body.responsableNombre?.trim()) errores.push('Nombre del responsable es obligatorio');
-  if (!/^\d{13}$/.test((body.responsableDpi || '').replace(/\s/g, '')))
+  if (!/^\d{13}$/.test(soloDigitos(body.responsableDpi || '')))
     errores.push('DPI del responsable debe tener 13 dígitos');
-  if (!/^\d{8}$/.test((body.responsableTelefono || '').replace(/\s/g, '')))
+  if (!/^\d{8}$/.test(soloDigitos(body.responsableTelefono || '')))
     errores.push('Teléfono del responsable debe tener 8 dígitos');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.responsableCorreo || ''))
     errores.push('Correo del responsable inválido');
@@ -139,12 +166,27 @@ app.post('/api/solicitudes', (req, res) => {
 
     try {
       const body = req.body;
+
+      // 1) Verificación de reCAPTCHA — primero, antes de cualquier procesamiento
+      const recaptchaResult = await verificarRecaptcha(
+        body.recaptchaToken,
+        req.ip || req.connection.remoteAddress
+      );
+      if (!recaptchaResult.valido) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Verificación de seguridad falló. Por favor intenta de nuevo.',
+          detalle: process.env.NODE_ENV !== 'production' ? recaptchaResult.razon : undefined,
+        });
+      }
+
+      // 2) Validación de payload
       const errores = validarPayload(body);
       if (errores.length > 0) {
         return res.status(400).json({ ok: false, errores });
       }
 
-      // Subir archivos a Drive vía Apps Script (en paralelo)
+      // 3) Subir archivos a Drive vía Apps Script (en paralelo)
       const subirSiExiste = async (campo) => {
         const file = req.files?.[campo]?.[0];
         if (!file) return { link: '', nombre: '' };
@@ -164,38 +206,62 @@ app.post('/api/solicitudes', (req, res) => {
         archivoSire: sireUp.link,
       };
 
-      // Fila para Google Sheets (orden fijo)
+      // Etiquetas legibles
+      const transporteParqueoLabel = {
+        transporte: 'Solo transporte',
+        parqueo: 'Solo parqueo',
+        ambos: 'Transporte y parqueo',
+        ninguno: 'Ninguno',
+      }[body.transporteParqueo] || body.transporteParqueo;
+
+      const tipoTransporteLabel = {
+        vehiculo_propio: 'Vehículo propio',
+        transporte_publico: 'Transporte público',
+        motocicleta: 'Motocicleta',
+        bicicleta: 'Bicicleta',
+        a_pie: 'A pie',
+        transporte_contratado: 'Transporte contratado (bus/microbús)',
+      }[body.tipoTransporte] || '';
+
+      const esMismaPersona =
+        body.solicitanteEsResponsable === 'true' ||
+        body.solicitanteEsResponsable === true;
+
+      // 4) Fila para Sheets — RETROCOMPATIBLE
       const fila = [
-        new Date().toISOString(),
-        body.solicitanteNombre,
-        body.solicitanteDpi,
-        body.solicitanteTelefono,
-        body.categoria,
-        body.modalidad || '',
-        body.tipoRecorrido || '',
-        body.universidad || '',
-        body.facultad || '',
-        body.establecimiento || '',
-        body.rangoEdades || '',
-        body.cantidadEstudiantes || '',
-        body.fechaRecorrido,
-        body.horaLlegada,
-        body.tiempoEstimado,
-        body.dpiVerificado === 'true' ? 'Sí' : 'No',
-        body.sireAdjunto || '',
-        body.comentarios || '',
-        body.responsableNombre,
-        body.responsableDpi,
-        body.responsableTelefono,
-        body.responsableCorreo,
-        archivos.archivoDpis,
-        archivos.cartaFacultad,
-        archivos.archivoSire,
+        new Date().toISOString(),     // A
+        body.solicitanteNombre,        // B
+        body.solicitanteDpi,           // C
+        body.solicitanteTelefono,      // D
+        body.categoria,                // E
+        body.modalidad || '',          // F
+        body.tipoRecorrido || '',      // G
+        body.universidad || '',        // H
+        body.facultad || '',           // I
+        body.establecimiento || '',    // J
+        body.rangoEdades || '',        // K
+        body.cantidadEstudiantes || '', // L
+        body.fechaRecorrido,           // M
+        body.horaLlegada,              // N
+        body.tiempoEstimado,           // O
+        body.dpiVerificado === 'true' ? 'Sí' : 'No', // P
+        body.sireAdjunto || '',        // Q
+        body.comentarios || '',        // R
+        body.responsableNombre,        // S
+        body.responsableDpi,           // T
+        body.responsableTelefono,      // U
+        body.responsableCorreo,        // V
+        archivos.archivoDpis,          // W
+        archivos.cartaFacultad,        // X
+        archivos.archivoSire,          // Y
+        transporteParqueoLabel,        // Z
+        esMismaPersona ? 'Sí' : 'No',  // AA
+        tipoTransporteLabel,           // AB ← NUEVA
       ];
 
       await appendRowToSheet(fila);
 
-      // Enviar correo de confirmación (no bloquea si falla)
+      // 5) Enviar correo (no bloquea si falla)
       try {
         await enviarCorreoConfirmacion(body, archivos);
       } catch (mailErr) {
@@ -218,12 +284,10 @@ app.post('/api/solicitudes', (req, res) => {
   });
 });
 
-// Manejo de rutas no encontradas
 app.use((req, res) => {
   res.status(404).json({ ok: false, error: 'Ruta no encontrada' });
 });
 
-// Manejo global de errores
 app.use((err, req, res, next) => {
   console.error('Error no controlado:', err);
   res.status(500).json({ ok: false, error: 'Error interno del servidor' });
