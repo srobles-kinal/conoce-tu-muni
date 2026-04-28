@@ -14,18 +14,22 @@ const UNIVERSIDADES_GT = [
   'Universidad Mesoamericana',
   'Universidad Rural de Guatemala',
   'Universidad Internaciones (UNI)',
-  'Universidad InterNaciones',
   'Universidad Regional',
 ];
 
+// Tipos de transporte (lista simplificada)
 const TIPOS_TRANSPORTE = [
   { v: 'vehiculo_propio', l: 'Vehículo propio' },
-  { v: 'transporte_publico', l: 'Transporte público' },
   { v: 'motocicleta', l: 'Motocicleta' },
   { v: 'bicicleta', l: 'Bicicleta' },
-  { v: 'a_pie', l: 'A pie' },
-  { v: 'transporte_contratado', l: 'Transporte contratado (bus/microbús)' },
+  { v: 'bus_microbus', l: 'Bus / Microbús' },
 ];
+
+// Tipos que requieren placa (todos menos bicicleta)
+const REQUIERE_PLACA = ['vehiculo_propio', 'motocicleta', 'bus_microbus'];
+
+// Regex para placa Guatemala (debe coincidir con backend)
+const PLACA_REGEX = /^[A-Z]{1,3}-?[0-9]{1,4}-?[A-Z0-9]{0,4}$/i;
 
 const estadoInicial = {
   solicitanteNombre: '',
@@ -51,8 +55,10 @@ const estadoInicial = {
   dpiVerificado: false,
   sireAdjunto: '',
 
-  transporteParqueo: '',
-  tipoTransporte: '',         // NUEVO
+  // Cambios: parqueo simplificado a sí/no
+  necesitaParqueo: '',
+  tipoTransporte: '',
+  numeroPlaca: '',         // NUEVO
 
   comentarios: '',
 
@@ -77,6 +83,9 @@ export default function FormularioRecorrido() {
   const [correoSolicitante, setCorreoSolicitante] = useState('');
   const [recaptchaToken, setRecaptchaToken] = useState(null);
 
+  // Estado de envío exitoso para mostrar el botón "nueva solicitud"
+  const [enviadoOk, setEnviadoOk] = useState(false);
+
   // Sincronizar responsable cuando es el mismo solicitante
   useEffect(() => {
     if (datos.solicitanteEsResponsable) {
@@ -96,19 +105,32 @@ export default function FormularioRecorrido() {
     correoSolicitante,
   ]);
 
-  // Si cambia el campo transporteParqueo a algo que no requiere transporte,
-  // limpiar el tipoTransporte para evitar datos huérfanos
+  // Si dice "no" al parqueo, limpiar tipoTransporte y placa
   useEffect(() => {
-    const necesita =
-      datos.transporteParqueo === 'transporte' || datos.transporteParqueo === 'ambos';
-    if (!necesita && datos.tipoTransporte) {
-      setDatos((prev) => ({ ...prev, tipoTransporte: '' }));
+    if (datos.necesitaParqueo === 'no') {
+      if (datos.tipoTransporte || datos.numeroPlaca) {
+        setDatos((prev) => ({ ...prev, tipoTransporte: '', numeroPlaca: '' }));
+      }
     }
-  }, [datos.transporteParqueo]);
+  }, [datos.necesitaParqueo]);
+
+  // Si elige bicicleta, limpiar placa
+  useEffect(() => {
+    if (datos.tipoTransporte === 'bicicleta' && datos.numeroPlaca) {
+      setDatos((prev) => ({ ...prev, numeroPlaca: '' }));
+    }
+  }, [datos.tipoTransporte]);
 
   const onChange = (e) => {
     const { name, value, type, checked } = e.target;
-    setDatos((prev) => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
+    let finalValue = type === 'checkbox' ? checked : value;
+
+    // Auto-uppercase para placa mientras escribe
+    if (name === 'numeroPlaca') {
+      finalValue = finalValue.toUpperCase();
+    }
+
+    setDatos((prev) => ({ ...prev, [name]: finalValue }));
     setErrores((prev) => ({ ...prev, [name]: undefined }));
   };
 
@@ -155,13 +177,21 @@ export default function FormularioRecorrido() {
     if (!datos.horaLlegada) e.horaLlegada = 'Requerido';
     if (!datos.tiempoEstimado.trim()) e.tiempoEstimado = 'Requerido';
 
-    if (!datos.transporteParqueo) e.transporteParqueo = 'Selecciona una opción';
+    if (!datos.necesitaParqueo) e.necesitaParqueo = 'Selecciona una opción';
 
-    // Tipo de transporte: requerido solo si necesita transporte o ambos
-    const necesitaTransporte =
-      datos.transporteParqueo === 'transporte' || datos.transporteParqueo === 'ambos';
-    if (necesitaTransporte && !datos.tipoTransporte) {
-      e.tipoTransporte = 'Selecciona el tipo de transporte';
+    // Si necesita parqueo, exigir tipo de transporte
+    if (datos.necesitaParqueo === 'si') {
+      if (!datos.tipoTransporte) e.tipoTransporte = 'Selecciona el tipo de transporte';
+
+      // Si requiere placa, validar formato
+      if (REQUIERE_PLACA.includes(datos.tipoTransporte)) {
+        const placa = datos.numeroPlaca.trim();
+        if (!placa) {
+          e.numeroPlaca = 'Número de placa es obligatorio';
+        } else if (!PLACA_REGEX.test(placa)) {
+          e.numeroPlaca = 'Formato inválido (ej: P-123ABC)';
+        }
+      }
     }
 
     if (datos.solicitanteEsResponsable) {
@@ -177,7 +207,6 @@ export default function FormularioRecorrido() {
         e.responsableCorreo = 'Correo inválido';
     }
 
-    // reCAPTCHA
     if (!recaptchaToken) e.recaptcha = 'Por favor confirma que no eres un robot';
 
     setErrores(e);
@@ -228,16 +257,11 @@ export default function FormularioRecorrido() {
       if (!res.ok || !json.ok) {
         const msg = json.errores?.join(' · ') || json.error || 'Error al enviar.';
         setMensaje({ tipo: 'error', texto: msg });
-        // Resetear reCAPTCHA si Google rechazó el token
         resetRecaptcha();
         setRecaptchaToken(null);
       } else {
         setMensaje({ tipo: 'ok', texto: json.mensaje });
-        setDatos(estadoInicial);
-        setCorreoSolicitante('');
-        setArchivos({ archivoDpis: null, cartaFacultad: null, archivoSire: null });
-        resetRecaptcha();
-        setRecaptchaToken(null);
+        setEnviadoOk(true); // Mostrar botón de "nueva solicitud"
       }
     } catch (err) {
       setMensaje({
@@ -249,12 +273,63 @@ export default function FormularioRecorrido() {
     }
   };
 
+  // Reiniciar el formulario completo (botón "nueva solicitud")
+  const onNuevaSolicitud = () => {
+    setDatos(estadoInicial);
+    setCorreoSolicitante('');
+    setArchivos({ archivoDpis: null, cartaFacultad: null, archivoSire: null });
+    setErrores({});
+    setMensaje(null);
+    setEnviadoOk(false);
+    resetRecaptcha();
+    setRecaptchaToken(null);
+    // Hacer scroll al inicio del formulario
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   const esUniversitario = datos.categoria === 'universitario';
   const esTurista = datos.categoria === 'turista';
   const esEducativo = datos.categoria === 'educativo';
-  const necesitaTransporte =
-    datos.transporteParqueo === 'transporte' || datos.transporteParqueo === 'ambos';
+  const necesitaPlaca =
+    datos.necesitaParqueo === 'si' && REQUIERE_PLACA.includes(datos.tipoTransporte);
 
+  // ============================================================
+  // VISTA: ÉXITO (después de enviar)
+  // ============================================================
+  if (enviadoOk) {
+    return (
+      <div className="max-w-3xl mx-auto bg-white shadow-lg rounded-2xl p-8 md:p-12 text-center space-y-6">
+        <div className="mx-auto w-16 h-16 rounded-full bg-green-100 flex items-center justify-center">
+          <svg className="w-10 h-10 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+          </svg>
+        </div>
+
+        <h2 className="text-2xl font-extrabold text-muni-azul">
+          ¡Solicitud registrada exitosamente!
+        </h2>
+
+        <p className="text-slate-600 max-w-md mx-auto">
+          {mensaje?.texto ||
+            'Tu solicitud ha sido enviada. Recibirás un correo de confirmación con los detalles.'}
+        </p>
+
+        <div className="pt-4">
+          <button
+            type="button"
+            onClick={onNuevaSolicitud}
+            className="btn-primario"
+          >
+            ¿Quieres enviar otra solicitud?
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ============================================================
+  // VISTA: FORMULARIO
+  // ============================================================
   return (
     <form
       onSubmit={onSubmit}
@@ -557,29 +632,27 @@ export default function FormularioRecorrido() {
               {errores.tiempoEstimado && <p className="campo-error">{errores.tiempoEstimado}</p>}
             </div>
 
-            {/* Transporte / Parqueo */}
+            {/* CAMBIO 1: ¿Necesitan parqueo? - sí/no */}
             <div>
-              <label className="campo-label">¿Necesitan transporte o parqueo?</label>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-1">
+              <label className="campo-label">¿Necesitan parqueo?</label>
+              <div className="grid grid-cols-2 gap-3 mt-1 max-w-md">
                 {[
-                  { v: 'transporte', l: 'Transporte' },
-                  { v: 'parqueo', l: 'Parqueo' },
-                  { v: 'ambos', l: 'Ambos' },
-                  { v: 'ninguno', l: 'Ninguno' },
+                  { v: 'si', l: 'Sí' },
+                  { v: 'no', l: 'No' },
                 ].map((op) => (
                   <label
                     key={op.v}
-                    className={`flex items-center gap-2 cursor-pointer p-3 border-2 rounded-xl transition ${
-                      datos.transporteParqueo === op.v
+                    className={`flex items-center justify-center gap-2 cursor-pointer p-3 border-2 rounded-xl transition ${
+                      datos.necesitaParqueo === op.v
                         ? 'border-muni-azul bg-muni-celeste/40'
                         : 'border-slate-200 hover:border-muni-azul/50'
                     }`}
                   >
                     <input
                       type="radio"
-                      name="transporteParqueo"
+                      name="necesitaParqueo"
                       value={op.v}
-                      checked={datos.transporteParqueo === op.v}
+                      checked={datos.necesitaParqueo === op.v}
                       onChange={onChange}
                       className="checkbox-muni"
                     />
@@ -587,30 +660,53 @@ export default function FormularioRecorrido() {
                   </label>
                 ))}
               </div>
-              {errores.transporteParqueo && (
-                <p className="campo-error">{errores.transporteParqueo}</p>
+              {errores.necesitaParqueo && (
+                <p className="campo-error">{errores.necesitaParqueo}</p>
               )}
             </div>
 
-            {/* NUEVO: Tipo de transporte (condicional) */}
-            {necesitaTransporte && (
-              <div>
-                <label className="campo-label">Tipo de transporte:</label>
-                <select
-                  name="tipoTransporte"
-                  value={datos.tipoTransporte}
-                  onChange={onChange}
-                  className="campo-input"
-                >
-                  <option value="">Selecciona el tipo de transporte...</option>
-                  {TIPOS_TRANSPORTE.map((op) => (
-                    <option key={op.v} value={op.v}>{op.l}</option>
-                  ))}
-                </select>
-                {errores.tipoTransporte && (
-                  <p className="campo-error">{errores.tipoTransporte}</p>
+            {/* CAMBIO 2: Tipo de transporte (solo si necesita parqueo) */}
+            {datos.necesitaParqueo === 'si' && (
+              <>
+                <div>
+                  <label className="campo-label">Tipo de transporte:</label>
+                  <select
+                    name="tipoTransporte"
+                    value={datos.tipoTransporte}
+                    onChange={onChange}
+                    className="campo-input"
+                  >
+                    <option value="">Selecciona el tipo de transporte...</option>
+                    {TIPOS_TRANSPORTE.map((op) => (
+                      <option key={op.v} value={op.v}>{op.l}</option>
+                    ))}
+                  </select>
+                  {errores.tipoTransporte && (
+                    <p className="campo-error">{errores.tipoTransporte}</p>
+                  )}
+                </div>
+
+                {/* CAMBIO 3: Número de placa (no aplica a bicicleta) */}
+                {necesitaPlaca && (
+                  <div>
+                    <label className="campo-label">Número de placa:</label>
+                    <input
+                      name="numeroPlaca"
+                      value={datos.numeroPlaca}
+                      onChange={onChange}
+                      className="campo-input uppercase"
+                      placeholder="Ej: P-123ABC"
+                      maxLength={10}
+                    />
+                    <p className="text-xs text-slate-500 mt-1">
+                      Formato guatemalteco. Ejemplos: P-123ABC, M-456DEF, C-789GHI
+                    </p>
+                    {errores.numeroPlaca && (
+                      <p className="campo-error">{errores.numeroPlaca}</p>
+                    )}
+                  </div>
                 )}
-              </div>
+              </>
             )}
           </>
         )}
@@ -645,18 +741,24 @@ export default function FormularioRecorrido() {
                 )}
               </div>
 
-              <div className="flex items-center gap-3">
-                <span className="font-bold text-muni-azul">Verificación individual de DPI:</span>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    name="dpiVerificado"
-                    checked={datos.dpiVerificado}
-                    onChange={onChange}
-                    className="checkbox-muni"
-                  />
-                  <span className="text-sm">DPI individual verificado</span>
-                </label>
+              {/* CAMBIO 5: Helper text en DPI verificado */}
+              <div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="font-bold text-muni-azul">Verificación individual de DPI:</span>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      name="dpiVerificado"
+                      checked={datos.dpiVerificado}
+                      onChange={onChange}
+                      className="checkbox-muni"
+                    />
+                    <span className="text-sm">DPI individual verificado</span>
+                  </label>
+                </div>
+                <p className="text-xs text-slate-500 mt-1.5 italic">
+                  💡 Marque esta opción si desea que la verificación del DPI se realice de forma individual para cada participante, con fines de control y validación de identidad.
+                </p>
               </div>
 
               {esUniversitario && (

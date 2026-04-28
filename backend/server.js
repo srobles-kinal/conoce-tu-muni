@@ -3,9 +3,9 @@
  * Municipalidad de Guatemala
  *
  * Decisión de arquitectura: NO usamos JWT.
- * El formulario es público por naturaleza (no hay usuarios registrados).
- * Las defensas activas son: rate-limiting, CORS whitelist, validación
- * de allow-list en payloads y reCAPTCHA contra abuso por bots.
+ * El formulario es público (no hay usuarios registrados).
+ * Defensas activas: rate-limiting, CORS whitelist, validación allow-list,
+ * reCAPTCHA contra bots.
  */
 require('dotenv').config();
 const express = require('express');
@@ -84,28 +84,40 @@ const fileFields = upload.fields([
 ]);
 
 // ============================================================
-// VALIDACIONES
+// CONSTANTES Y VALIDACIONES
 // ============================================================
-// Whitelists para evitar inyección de valores arbitrarios
+// Whitelist de tipos de transporte (solo los permitidos cuando hay parqueo)
 const TIPOS_TRANSPORTE = [
   'vehiculo_propio',
-  'transporte_publico',
   'motocicleta',
   'bicicleta',
-  'a_pie',
-  'transporte_contratado',
+  'bus_microbus',
 ];
+
+// Tipos que requieren número de placa (todos excepto bicicleta)
+const TIPOS_QUE_REQUIEREN_PLACA = [
+  'vehiculo_propio',
+  'motocicleta',
+  'bus_microbus',
+];
+
+// Regex para placa guatemalteca - flexible:
+// Acepta formatos como: P-123ABC, M-123ABC, P123ABC, P-123-ABC
+// Letras al inicio (1-3), guión opcional, números (1-4), letras/números (0-4)
+const PLACA_REGEX = /^[A-Z]{1,3}-?[0-9]{1,4}-?[A-Z0-9]{0,4}$/i;
 
 const validarPayload = (body) => {
   const errores = [];
   const soloDigitos = (v) => (v || '').replace(/\s/g, '');
 
+  // Solicitante
   if (!body.solicitanteNombre?.trim()) errores.push('Nombre del solicitante es obligatorio');
   if (!/^\d{13}$/.test(soloDigitos(body.solicitanteDpi || '')))
     errores.push('DPI del solicitante debe tener 13 dígitos');
   if (!/^\d{8}$/.test(soloDigitos(body.solicitanteTelefono || '')))
     errores.push('Teléfono del solicitante debe tener 8 dígitos');
 
+  // Categoría
   if (!['universitario', 'turista', 'educativo'].includes(body.categoria))
     errores.push('Categoría de recorrido inválida');
 
@@ -128,18 +140,27 @@ const validarPayload = (body) => {
   if (!body.horaLlegada) errores.push('Hora de llegada es obligatoria');
   if (!body.tiempoEstimado?.trim()) errores.push('Tiempo estimado es obligatorio');
 
-  if (!['transporte', 'parqueo', 'ambos', 'ninguno'].includes(body.transporteParqueo))
-    errores.push('Selección de transporte/parqueo inválida');
+  // Necesita parqueo (sí/no)
+  if (!['si', 'no'].includes(body.necesitaParqueo))
+    errores.push('Selección de parqueo inválida');
 
-  // Tipo de transporte: obligatorio solo si necesita transporte o ambos
-  const necesitaTransporte =
-    body.transporteParqueo === 'transporte' || body.transporteParqueo === 'ambos';
-
-  if (necesitaTransporte) {
+  // Si necesita parqueo, debe especificar tipo de transporte
+  if (body.necesitaParqueo === 'si') {
     if (!TIPOS_TRANSPORTE.includes(body.tipoTransporte))
       errores.push('Tipo de transporte inválido');
+
+    // Si el tipo de transporte requiere placa, validarla
+    if (TIPOS_QUE_REQUIEREN_PLACA.includes(body.tipoTransporte)) {
+      const placa = (body.numeroPlaca || '').trim().toUpperCase();
+      if (!placa) {
+        errores.push('Número de placa es obligatorio');
+      } else if (!PLACA_REGEX.test(placa)) {
+        errores.push('Formato de placa inválido (ej: P-123ABC)');
+      }
+    }
   }
 
+  // Responsable
   if (!body.responsableNombre?.trim()) errores.push('Nombre del responsable es obligatorio');
   if (!/^\d{13}$/.test(soloDigitos(body.responsableDpi || '')))
     errores.push('DPI del responsable debe tener 13 dígitos');
@@ -167,7 +188,7 @@ app.post('/api/solicitudes', (req, res) => {
     try {
       const body = req.body;
 
-      // 1) Verificación de reCAPTCHA — primero, antes de cualquier procesamiento
+      // 1) reCAPTCHA
       const recaptchaResult = await verificarRecaptcha(
         body.recaptchaToken,
         req.ip || req.connection.remoteAddress
@@ -180,13 +201,13 @@ app.post('/api/solicitudes', (req, res) => {
         });
       }
 
-      // 2) Validación de payload
+      // 2) Validación
       const errores = validarPayload(body);
       if (errores.length > 0) {
         return res.status(400).json({ ok: false, errores });
       }
 
-      // 3) Subir archivos a Drive vía Apps Script (en paralelo)
+      // 3) Subida de archivos
       const subirSiExiste = async (campo) => {
         const file = req.files?.[campo]?.[0];
         if (!file) return { link: '', nombre: '' };
@@ -207,29 +228,25 @@ app.post('/api/solicitudes', (req, res) => {
       };
 
       // Etiquetas legibles
-      const transporteParqueoLabel = {
-        transporte: 'Solo transporte',
-        parqueo: 'Solo parqueo',
-        ambos: 'Transporte y parqueo',
-        ninguno: 'Ninguno',
-      }[body.transporteParqueo] || body.transporteParqueo;
+      const necesitaParqueoLabel = body.necesitaParqueo === 'si' ? 'Sí' : 'No';
 
       const tipoTransporteLabel = {
         vehiculo_propio: 'Vehículo propio',
-        transporte_publico: 'Transporte público',
         motocicleta: 'Motocicleta',
         bicicleta: 'Bicicleta',
-        a_pie: 'A pie',
-        transporte_contratado: 'Transporte contratado (bus/microbús)',
+        bus_microbus: 'Bus / Microbús',
       }[body.tipoTransporte] || '';
 
       const esMismaPersona =
         body.solicitanteEsResponsable === 'true' ||
         body.solicitanteEsResponsable === true;
 
-      // 4) Fila para Sheets — RETROCOMPATIBLE
+      // Normalizar placa a mayúsculas
+      const placaFormateada = (body.numeroPlaca || '').trim().toUpperCase();
+
+      // 4) Fila para Sheets — RETROCOMPATIBLE (nueva columna AC al final)
       const fila = [
-        new Date().toISOString(),     // A
+        new Date().toISOString(),     // A: Timestamp
         body.solicitanteNombre,        // B
         body.solicitanteDpi,           // C
         body.solicitanteTelefono,      // D
@@ -254,14 +271,15 @@ app.post('/api/solicitudes', (req, res) => {
         archivos.archivoDpis,          // W
         archivos.cartaFacultad,        // X
         archivos.archivoSire,          // Y
-        transporteParqueoLabel,        // Z
+        necesitaParqueoLabel,          // Z: Parqueo (era Transporte/Parqueo)
         esMismaPersona ? 'Sí' : 'No',  // AA
-        tipoTransporteLabel,           // AB ← NUEVA
+        tipoTransporteLabel,           // AB
+        placaFormateada,               // AC: NUEVA — Número de placa
       ];
 
       await appendRowToSheet(fila);
 
-      // 5) Enviar correo (no bloquea si falla)
+      // 5) Correo
       try {
         await enviarCorreoConfirmacion(body, archivos);
       } catch (mailErr) {

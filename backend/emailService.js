@@ -51,20 +51,13 @@ function construirHtml(datos, archivos) {
     diversificado: 'Diversificado',
   }[datos.tipoRecorrido] || '';
 
-  const transporteParqueoLabel = {
-    transporte: 'Solo transporte',
-    parqueo: 'Solo parqueo',
-    ambos: 'Transporte y parqueo',
-    ninguno: 'Ninguno',
-  }[datos.transporteParqueo] || datos.transporteParqueo || '';
+  const necesitaParqueoLabel = datos.necesitaParqueo === 'si' ? 'Sí' : 'No';
 
   const tipoTransporteLabel = {
     vehiculo_propio: 'Vehículo propio',
-    transporte_publico: 'Transporte público',
     motocicleta: 'Motocicleta',
     bicicleta: 'Bicicleta',
-    a_pie: 'A pie',
-    transporte_contratado: 'Transporte contratado (bus/microbús)',
+    bus_microbus: 'Bus / Microbús',
   }[datos.tipoTransporte] || '';
 
   let detallesEspecificos = '';
@@ -83,8 +76,13 @@ function construirHtml(datos, archivos) {
     `;
   }
 
+  // Filas condicionales para transporte
   const tipoTransporteRow = tipoTransporteLabel
     ? `<tr><td style="padding:8px;border-bottom:1px solid #eee;"><b>Tipo de transporte:</b></td><td style="padding:8px;border-bottom:1px solid #eee;">${tipoTransporteLabel}</td></tr>`
+    : '';
+
+  const placaRow = datos.numeroPlaca && datos.tipoTransporte !== 'bicicleta'
+    ? `<tr><td style="padding:8px;border-bottom:1px solid #eee;"><b>Número de placa:</b></td><td style="padding:8px;border-bottom:1px solid #eee;">${escapeHtml(datos.numeroPlaca)}</td></tr>`
     : '';
 
   const archivosHtml = Object.entries(archivos)
@@ -122,8 +120,9 @@ function construirHtml(datos, archivos) {
           <tr><td style="padding:8px;border-bottom:1px solid #eee;"><b>Fecha propuesta:</b></td><td style="padding:8px;border-bottom:1px solid #eee;">${escapeHtml(datos.fechaRecorrido)}</td></tr>
           <tr><td style="padding:8px;border-bottom:1px solid #eee;"><b>Hora de llegada:</b></td><td style="padding:8px;border-bottom:1px solid #eee;">${escapeHtml(datos.horaLlegada)}</td></tr>
           <tr><td style="padding:8px;border-bottom:1px solid #eee;"><b>Tiempo estimado:</b></td><td style="padding:8px;border-bottom:1px solid #eee;">${escapeHtml(datos.tiempoEstimado)}</td></tr>
-          <tr><td style="padding:8px;border-bottom:1px solid #eee;"><b>Transporte / Parqueo:</b></td><td style="padding:8px;border-bottom:1px solid #eee;">${transporteParqueoLabel}</td></tr>
+          <tr><td style="padding:8px;border-bottom:1px solid #eee;"><b>¿Necesita parqueo?:</b></td><td style="padding:8px;border-bottom:1px solid #eee;">${necesitaParqueoLabel}</td></tr>
           ${tipoTransporteRow}
+          ${placaRow}
           <tr><td style="padding:8px;border-bottom:1px solid #eee;"><b>Solicitante:</b></td><td style="padding:8px;border-bottom:1px solid #eee;">${escapeHtml(datos.solicitanteNombre)}</td></tr>
         </table>
 
